@@ -614,7 +614,7 @@ def create_app() -> Flask:
                 if _running_on_render():
                     return (
                         "SMTP is unreachable from this Render service. On Render free instances, outbound SMTP ports can be blocked. "
-                        "Use a paid instance or configure Resend with EMAIL_DELIVERY_PROVIDER=resend, RESEND_API_KEY, and EMAIL_FROM."
+                        "Use a paid instance or configure Brevo with EMAIL_DELIVERY_PROVIDER=brevo, BREVO_API_KEY, and EMAIL_FROM."
                     )
                 return f"Unable to reach the SMTP server while {error_context}. Verify SMTP_HOST, SMTP_PORT, and outbound network access."
             return None
@@ -740,10 +740,61 @@ def create_app() -> Flask:
         except urllib_error.URLError as exc:
             raise RuntimeError(f"Unable to reach the Resend API while {error_context}: {exc.reason}") from exc
 
+    def _send_brevo_email(recipient_email: str, subject: str, body_lines: list[str], *, error_context: str) -> None:
+        brevo_api_key = os.environ.get("BREVO_API_KEY", "").strip()
+        email_from = os.environ.get("EMAIL_FROM", "").strip() or os.environ.get("SMTP_FROM", "").strip()
+        email_from_name = os.environ.get("EMAIL_FROM_NAME", "").strip() or "SEMCDS"
+        email_user_agent = os.environ.get("EMAIL_USER_AGENT", "").strip() or "SEMCDS/1.0"
+
+        if not brevo_api_key:
+            raise RuntimeError("Brevo email delivery is not configured. Set BREVO_API_KEY first.")
+        if not email_from:
+            raise RuntimeError("Set EMAIL_FROM for Brevo email delivery.")
+
+        payload = {
+            "sender": {
+                "email": email_from,
+                "name": email_from_name,
+            },
+            "to": [{"email": recipient_email}],
+            "subject": subject,
+            "textContent": "\n".join(body_lines),
+        }
+        brevo_request = urllib_request.Request(
+            "https://api.brevo.com/v3/smtp/email",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_api_key,
+                "content-type": "application/json",
+                "User-Agent": email_user_agent,
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(brevo_request, timeout=30) as response:
+                response.read()
+        except urllib_error.HTTPError as exc:
+            raw_body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+            try:
+                parsed_body = json.loads(raw_body) if raw_body else {}
+            except ValueError:
+                parsed_body = {}
+            detail_parts = [parsed_body.get("message"), parsed_body.get("code")]
+            detail = " - ".join(part for part in detail_parts if part) or raw_body or str(exc)
+            raise RuntimeError(f"Brevo rejected the email request while {error_context}: {detail}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Unable to reach the Brevo API while {error_context}: {exc.reason}") from exc
+
     def _send_email(recipient_email: str, subject: str, body_lines: list[str], *, error_context: str) -> None:
         provider = os.environ.get("EMAIL_DELIVERY_PROVIDER", "auto").strip().lower() or "auto"
+        brevo_api_key = os.environ.get("BREVO_API_KEY", "").strip()
         resend_api_key = os.environ.get("RESEND_API_KEY", "").strip()
         smtp_host = os.environ.get("SMTP_HOST", "").strip()
+
+        if provider == "brevo":
+            _send_brevo_email(recipient_email, subject, body_lines, error_context=error_context)
+            return
 
         if provider == "resend":
             _send_resend_email(recipient_email, subject, body_lines, error_context=error_context)
@@ -753,25 +804,32 @@ def create_app() -> Flask:
             _send_smtp_email(recipient_email, subject, body_lines, error_context=error_context)
             return
 
-        if provider not in {"auto", "smtp", "resend"}:
-            raise RuntimeError("EMAIL_DELIVERY_PROVIDER must be auto, smtp, or resend.")
+        if provider not in {"auto", "smtp", "resend", "brevo"}:
+            raise RuntimeError("EMAIL_DELIVERY_PROVIDER must be auto, smtp, brevo, or resend.")
 
         if smtp_host:
             try:
                 _send_smtp_email(recipient_email, subject, body_lines, error_context=error_context)
                 return
             except EmailDeliveryConnectivityError:
+                if brevo_api_key:
+                    _send_brevo_email(recipient_email, subject, body_lines, error_context=error_context)
+                    return
                 if resend_api_key:
                     _send_resend_email(recipient_email, subject, body_lines, error_context=error_context)
                     return
                 raise
+
+        if brevo_api_key:
+            _send_brevo_email(recipient_email, subject, body_lines, error_context=error_context)
+            return
 
         if resend_api_key:
             _send_resend_email(recipient_email, subject, body_lines, error_context=error_context)
             return
 
         raise RuntimeError(
-            "Email sending is not configured. Set SMTP_HOST for SMTP or set RESEND_API_KEY with EMAIL_FROM for Resend."
+            "Email sending is not configured. Set SMTP_HOST for SMTP, or set BREVO_API_KEY with EMAIL_FROM for Brevo, or set RESEND_API_KEY with EMAIL_FROM for Resend."
         )
 
     def _send_invitation_email(recipient_email: str, temporary_password: str | None = None) -> None:

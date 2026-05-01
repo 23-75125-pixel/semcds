@@ -39,11 +39,15 @@ flask --app wsgi run --debug
    - `SMTP_USER`
    - `SMTP_PASSWORD`
    - `SMTP_FROM`
+   - `EMAIL_DELIVERY_PROVIDER`
+   - `EMAIL_FROM`
+   - `EMAIL_FROM_NAME`
+   - `BREVO_API_KEY` and/or `RESEND_API_KEY`
    - `OPENAI_API_KEY` and/or `GEMINI_API_KEY` if you use AI quiz generation
 5. Restart the service after saving the environment variables.
 
 The Render blueprint is configured for a single instance with `eventlet` because live quiz monitoring uses Socket.IO and in-memory room state.
-If you deploy on a free Render instance, outbound SMTP can be blocked. In that case, set `EMAIL_DELIVERY_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM` to send invitations and password reset links over the Resend HTTPS API instead of SMTP.
+If you deploy on a free Render instance, outbound SMTP can be blocked. In that case, set `EMAIL_DELIVERY_PROVIDER=brevo`, `BREVO_API_KEY`, `EMAIL_FROM`, and optional `EMAIL_FROM_NAME` to send invitations and password reset links over the Brevo HTTPS API instead of SMTP. Resend is still supported as an alternative with `EMAIL_DELIVERY_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM`.
 
 ## Login
 

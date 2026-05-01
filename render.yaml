@@ -38,6 +38,10 @@ services:
         value: auto
       - key: EMAIL_FROM
         sync: false
+      - key: EMAIL_FROM_NAME
+        value: SEMCDS
+      - key: BREVO_API_KEY
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: SMTP_USE_TLS

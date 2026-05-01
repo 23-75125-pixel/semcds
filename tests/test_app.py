@@ -339,6 +339,65 @@ def test_forgot_password_sends_reset_link_over_resend_when_configured(tmp_path, 
     assert "/reset-password/" in resend_requests[0]["body"]["text"]
 
 
+def test_forgot_password_sends_reset_link_over_brevo_when_configured(tmp_path, monkeypatch):
+    app = build_app(tmp_path, monkeypatch)
+    brevo_requests = []
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"messageId":"brevo_123"}'
+
+    def fake_urlopen(request, timeout=0):
+        brevo_requests.append(
+            {
+                "url": request.full_url,
+                "headers": dict(request.header_items()),
+                "body": json.loads(request.data.decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return DummyResponse()
+
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.setenv("EMAIL_DELIVERY_PROVIDER", "brevo")
+    monkeypatch.setenv("EMAIL_FROM", "verified@example.com")
+    monkeypatch.setenv("EMAIL_FROM_NAME", "SEMCDS")
+    monkeypatch.setenv("BREVO_API_KEY", "xkeysib-test-123")
+    monkeypatch.setattr(app_module.urllib_request, "urlopen", fake_urlopen)
+
+    client = app.test_client()
+    page = client.get("/forgot-password")
+    csrf_token = extract_csrf_token(page)
+
+    response = client.post(
+        "/forgot-password",
+        data={
+            "_csrf_token": csrf_token,
+            "email": STUDENT_EMAIL,
+        },
+        follow_redirects=False,
+    )
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "password reset link has been sent" in html
+    assert len(brevo_requests) == 1
+    assert brevo_requests[0]["url"] == "https://api.brevo.com/v3/smtp/email"
+    assert brevo_requests[0]["headers"]["api-key"] == "xkeysib-test-123"
+    assert brevo_requests[0]["headers"]["User-agent"] == "SEMCDS/1.0"
+    assert brevo_requests[0]["body"]["sender"] == {"email": "verified@example.com", "name": "SEMCDS"}
+    assert brevo_requests[0]["body"]["to"] == [{"email": STUDENT_EMAIL}]
+    assert brevo_requests[0]["body"]["subject"] == "SEMCDS password reset"
+    assert "/reset-password/" in brevo_requests[0]["body"]["textContent"]
+
+
 def test_second_client_is_not_auto_logged_in(tmp_path, monkeypatch):
     app = build_app(tmp_path, monkeypatch)
     first_client = app.test_client()
