@@ -43,6 +43,7 @@ flask --app wsgi run --debug
 5. Restart the service after saving the environment variables.
 
 The Render blueprint is configured for a single instance with `eventlet` because live quiz monitoring uses Socket.IO and in-memory room state.
+If you deploy on a free Render instance, outbound SMTP can be blocked. In that case, set `EMAIL_DELIVERY_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM` to send invitations and password reset links over the Resend HTTPS API instead of SMTP.
 
 ## Login
 

@@ -590,6 +590,15 @@ def create_app() -> Flask:
         except Exception as exc:
             raise RuntimeError("Unable to retrieve Google profile information.") from exc
 
+    class EmailDeliveryConnectivityError(RuntimeError):
+        pass
+
+    def _running_on_render() -> bool:
+        return any(
+            str(os.environ.get(name, "")).strip()
+            for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_URL")
+        )
+
     def _send_smtp_email(recipient_email: str, subject: str, body_lines: list[str], *, error_context: str) -> None:
         def env_flag(name: str, default: bool) -> bool:
             raw_value = os.environ.get(name)
@@ -597,10 +606,23 @@ def create_app() -> Flask:
                 return default
             return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
 
+        def connectivity_error_message(exc: BaseException) -> str | None:
+            error_text = str(exc).strip() or exc.__class__.__name__
+            lowered_text = error_text.lower()
+            error_no = getattr(exc, "errno", None)
+            if error_no in {101, 111, 113} or "network is unreachable" in lowered_text or "connection refused" in lowered_text:
+                if _running_on_render():
+                    return (
+                        "SMTP is unreachable from this Render service. On Render free instances, outbound SMTP ports can be blocked. "
+                        "Use a paid instance or configure Resend with EMAIL_DELIVERY_PROVIDER=resend, RESEND_API_KEY, and EMAIL_FROM."
+                    )
+                return f"Unable to reach the SMTP server while {error_context}. Verify SMTP_HOST, SMTP_PORT, and outbound network access."
+            return None
+
         smtp_host = os.environ.get("SMTP_HOST", "").strip()
         smtp_user = os.environ.get("SMTP_USER", "").strip()
         smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
-        smtp_from = os.environ.get("SMTP_FROM", smtp_user or "noreply@example.com").strip()
+        smtp_from = os.environ.get("SMTP_FROM", "").strip() or os.environ.get("EMAIL_FROM", "").strip() or smtp_user or "noreply@example.com"
         try:
             smtp_port = int((os.environ.get("SMTP_PORT", "587") or "587").strip())
         except ValueError as exc:
@@ -636,11 +658,12 @@ def create_app() -> Flask:
         message.set_content("\n".join(body_lines))
 
         context = ssl.create_default_context()
-        if smtp_use_ssl:
-            smtp_client = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=smtp_timeout, context=context)
-        else:
-            smtp_client = smtplib.SMTP(smtp_host, smtp_port, timeout=smtp_timeout)
+        smtp_client = None
         try:
+            if smtp_use_ssl:
+                smtp_client = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=smtp_timeout, context=context)
+            else:
+                smtp_client = smtplib.SMTP(smtp_host, smtp_port, timeout=smtp_timeout)
             if smtp_use_tls:
                 smtp_client.ehlo()
                 try:
@@ -653,6 +676,11 @@ def create_app() -> Flask:
             if smtp_require_auth:
                 smtp_client.login(smtp_user, smtp_password)
             smtp_client.send_message(message, from_addr=effective_sender)
+        except OSError as exc:
+            user_facing_message = connectivity_error_message(exc)
+            if user_facing_message:
+                raise EmailDeliveryConnectivityError(user_facing_message) from exc
+            raise RuntimeError(f"Unable to connect to the SMTP server while {error_context}: {exc}") from exc
         except smtplib.SMTPAuthenticationError as exc:
             raise RuntimeError(
                 "SMTP authentication failed. If you are using Gmail, set SMTP_USER to the Gmail address "
@@ -667,9 +695,82 @@ def create_app() -> Flask:
             raise RuntimeError(f"SMTP error while {error_context}: {exc}") from exc
         finally:
             try:
-                smtp_client.quit()
+                if smtp_client:
+                    smtp_client.quit()
             except Exception:
                 pass
+
+    def _send_resend_email(recipient_email: str, subject: str, body_lines: list[str], *, error_context: str) -> None:
+        resend_api_key = os.environ.get("RESEND_API_KEY", "").strip()
+        email_from = os.environ.get("EMAIL_FROM", "").strip() or os.environ.get("SMTP_FROM", "").strip()
+
+        if not resend_api_key:
+            raise RuntimeError("Resend email delivery is not configured. Set RESEND_API_KEY first.")
+        if not email_from:
+            raise RuntimeError("Set EMAIL_FROM for Resend email delivery.")
+
+        payload = {
+            "from": email_from,
+            "to": [recipient_email],
+            "subject": subject,
+            "text": "\n".join(body_lines),
+        }
+        resend_request = urllib_request.Request(
+            "https://api.resend.com/emails",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {resend_api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(resend_request, timeout=30) as response:
+                response.read()
+        except urllib_error.HTTPError as exc:
+            raw_body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+            try:
+                parsed_body = json.loads(raw_body) if raw_body else {}
+            except ValueError:
+                parsed_body = {}
+            detail = parsed_body.get("message") or raw_body or str(exc)
+            raise RuntimeError(f"Resend rejected the email request while {error_context}: {detail}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Unable to reach the Resend API while {error_context}: {exc.reason}") from exc
+
+    def _send_email(recipient_email: str, subject: str, body_lines: list[str], *, error_context: str) -> None:
+        provider = os.environ.get("EMAIL_DELIVERY_PROVIDER", "auto").strip().lower() or "auto"
+        resend_api_key = os.environ.get("RESEND_API_KEY", "").strip()
+        smtp_host = os.environ.get("SMTP_HOST", "").strip()
+
+        if provider == "resend":
+            _send_resend_email(recipient_email, subject, body_lines, error_context=error_context)
+            return
+
+        if provider == "smtp":
+            _send_smtp_email(recipient_email, subject, body_lines, error_context=error_context)
+            return
+
+        if provider not in {"auto", "smtp", "resend"}:
+            raise RuntimeError("EMAIL_DELIVERY_PROVIDER must be auto, smtp, or resend.")
+
+        if smtp_host:
+            try:
+                _send_smtp_email(recipient_email, subject, body_lines, error_context=error_context)
+                return
+            except EmailDeliveryConnectivityError:
+                if resend_api_key:
+                    _send_resend_email(recipient_email, subject, body_lines, error_context=error_context)
+                    return
+                raise
+
+        if resend_api_key:
+            _send_resend_email(recipient_email, subject, body_lines, error_context=error_context)
+            return
+
+        raise RuntimeError(
+            "Email sending is not configured. Set SMTP_HOST for SMTP or set RESEND_API_KEY with EMAIL_FROM for Resend."
+        )
 
     def _send_invitation_email(recipient_email: str, temporary_password: str | None = None) -> None:
         login_url = _current_external_url("login")
@@ -696,7 +797,7 @@ def create_app() -> Flask:
                 "If you did not expect this invitation, please ignore this message.",
             ]
         )
-        _send_smtp_email(
+        _send_email(
             recipient_email,
             "You're invited to SEMCDS",
             body_lines,
@@ -704,7 +805,7 @@ def create_app() -> Flask:
         )
 
     def _send_password_reset_email(recipient_email: str, reset_url: str) -> None:
-        _send_smtp_email(
+        _send_email(
             recipient_email,
             "SEMCDS password reset",
             [

@@ -282,6 +282,62 @@ def test_forgot_password_sends_reset_link_over_smtp_and_invalidates_used_token(t
     assert login_response.status_code == 302
 
 
+def test_forgot_password_sends_reset_link_over_resend_when_configured(tmp_path, monkeypatch):
+    app = build_app(tmp_path, monkeypatch)
+    resend_requests = []
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"id":"email_123"}'
+
+    def fake_urlopen(request, timeout=0):
+        resend_requests.append(
+            {
+                "url": request.full_url,
+                "headers": dict(request.header_items()),
+                "body": json.loads(request.data.decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return DummyResponse()
+
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.setenv("EMAIL_DELIVERY_PROVIDER", "resend")
+    monkeypatch.setenv("EMAIL_FROM", "verified@example.com")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_123")
+    monkeypatch.setattr(app_module.urllib_request, "urlopen", fake_urlopen)
+
+    client = app.test_client()
+    page = client.get("/forgot-password")
+    csrf_token = extract_csrf_token(page)
+
+    response = client.post(
+        "/forgot-password",
+        data={
+            "_csrf_token": csrf_token,
+            "email": STUDENT_EMAIL,
+        },
+        follow_redirects=False,
+    )
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "password reset link has been sent" in html
+    assert len(resend_requests) == 1
+    assert resend_requests[0]["url"] == "https://api.resend.com/emails"
+    assert resend_requests[0]["headers"]["Authorization"] == "Bearer re_test_123"
+    assert resend_requests[0]["body"]["from"] == "verified@example.com"
+    assert resend_requests[0]["body"]["to"] == [STUDENT_EMAIL]
+    assert resend_requests[0]["body"]["subject"] == "SEMCDS password reset"
+    assert "/reset-password/" in resend_requests[0]["body"]["text"]
+
+
 def test_second_client_is_not_auto_logged_in(tmp_path, monkeypatch):
     app = build_app(tmp_path, monkeypatch)
     first_client = app.test_client()
