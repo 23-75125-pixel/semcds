@@ -107,8 +107,11 @@ DETECTION_CLASS_MARGIN = 0.06
 DETECTION_CLASS_DRAW_MIN_CONF = 0.15
 DETECTION_CLASS_CHEAT_STRICT_MIN_CONF = 0.70
 QUIZ_SECTION_OPTIONS = ["BSIT-NT 3201", "BSIT-NT 3202"]
+SOCKETIO_ASYNC_MODE = os.getenv("SOCKETIO_ASYNC_MODE", "threading").strip().lower()
+if SOCKETIO_ASYNC_MODE in {"", "auto"}:
+    SOCKETIO_ASYNC_MODE = None
 
-socketio = SocketIO(async_mode="threading") if SocketIO else None
+socketio = SocketIO(async_mode=SOCKETIO_ASYNC_MODE) if SocketIO else None
 _monitor_rooms: dict[str, dict[str, dict]] = {}
 _detection_event_cache: dict[str, datetime] = {}
 

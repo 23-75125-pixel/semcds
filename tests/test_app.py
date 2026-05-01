@@ -15,12 +15,20 @@ ADMIN_EMAIL = "benjie.samonte@semcds.edu"
 ADMIN_PASSWORD = "Admin123!"
 
 
+def seed_test_users() -> None:
+    if not data_module.get_user_by_email(ADMIN_EMAIL):
+        data_module.create_user(ADMIN_EMAIL, "Prof. Benjie Samonte", "admin", ADMIN_PASSWORD)
+    if not data_module.get_user_by_email(STUDENT_EMAIL):
+        data_module.create_user(STUDENT_EMAIL, "Jhon Boiser", "user", STUDENT_PASSWORD)
+
+
 def build_app(tmp_path, monkeypatch):
     test_db_path = tmp_path / "semcds-test.db"
     monkeypatch.setattr(data_module, "DB_PATH", test_db_path)
     app_module._monitor_rooms.clear()
     app = create_app()
     app.config.update(TESTING=True)
+    seed_test_users()
     return app
 
 

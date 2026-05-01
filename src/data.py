@@ -42,37 +42,6 @@ FEATURES = [
 USER_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 VALID_USER_ROLES = {"admin", "user"}
 
-DEFAULT_USERS = [
-    {
-        "id": "user-admin-001",
-        "email": "benjie.samonte@semcds.edu",
-        "full_name": "Prof. Benjie Samonte",
-        "role": "admin",
-        "password": "Admin123!",
-        "created_at": "2026-03-12 08:00",
-    },
-    {
-        "id": "user-admin-002",
-        "email": "23-78520@g.batstate-u.edu.ph",
-        "full_name": "Lira Angela Ata",
-        "role": "admin",
-        "password": "Ata23-78520",
-        "created_at": "2026-03-12 08:00",
-    },
-    {
-        "id": "user-student-001",
-        "email": "jhon.boiser@student.edu",
-        "full_name": "Jhon Boiser",
-        "role": "user",
-        "password": "Student123!",
-        "created_at": "2026-03-17 09:15",
-    },
-]
-
-LEGACY_REMOVED_USER_IDS = [
-    "user-student-002",
-]
-
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 SUPABASE_API_URL = f"{SUPABASE_URL.rstrip('/')}/rest/v1" if SUPABASE_URL else ""
@@ -193,24 +162,6 @@ def get_connection() -> sqlite3.Connection:
 
 def init_database() -> None:
     if using_supabase():
-        existing_users = _sb_select("users")
-        existing_by_id = {str(row.get("id", "")): row for row in existing_users}
-        for user in DEFAULT_USERS:
-            payload = {
-                "email": user["email"],
-                "full_name": user["full_name"],
-                "role": user["role"],
-                "password_hash": generate_password_hash(user["password"]),
-                "created_at": user["created_at"],
-            }
-            if user["id"] in existing_by_id:
-                _sb_update("users", payload, {"id": user["id"]})
-            else:
-                _sb_insert("users", {"id": user["id"], **payload})
-
-        for removed_user_id in LEGACY_REMOVED_USER_IDS:
-            if removed_user_id in existing_by_id:
-                _sb_delete("users", {"id": removed_user_id})
         return
 
     with get_connection() as connection:
@@ -227,85 +178,6 @@ def init_database() -> None:
         existing_columns = [row[1] for row in connection.execute("PRAGMA table_info(quiz_attempts)").fetchall()]
         if "quiz_code" not in existing_columns:
             connection.execute("ALTER TABLE quiz_attempts ADD COLUMN quiz_code VARCHAR(50) NOT NULL DEFAULT ''")
-        count = connection.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
-        if count == 0:
-            connection.executemany(
-                """
-                INSERT INTO users (id, email, full_name, role, password_hash, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        user["id"],
-                        user["email"],
-                        user["full_name"],
-                        user["role"],
-                        generate_password_hash(user["password"]),
-                        user["created_at"],
-                    )
-                    for user in DEFAULT_USERS
-                ],
-            )
-        else:
-            for user in DEFAULT_USERS:
-                existing_user = connection.execute(
-                    "SELECT id FROM users WHERE id = ?",
-                    (user["id"],),
-                ).fetchone()
-                if existing_user:
-                    connection.execute(
-                        """
-                        UPDATE users
-                        SET email = ?, full_name = ?, role = ?, password_hash = ?, created_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            user["email"],
-                            user["full_name"],
-                            user["role"],
-                            generate_password_hash(user["password"]),
-                            user["created_at"],
-                            user["id"],
-                        ),
-                    )
-                else:
-                    existing_email_user = connection.execute(
-                        "SELECT id FROM users WHERE lower(email) = ?",
-                        (user["email"].strip().lower(),),
-                    ).fetchone()
-                    if existing_email_user:
-                        connection.execute(
-                            """
-                            UPDATE users
-                            SET full_name = ?, role = ?, password_hash = ?, created_at = ?
-                            WHERE id = ?
-                            """,
-                            (
-                                user["full_name"],
-                                user["role"],
-                                generate_password_hash(user["password"]),
-                                user["created_at"],
-                                existing_email_user["id"],
-                            ),
-                        )
-                    else:
-                        connection.execute(
-                            """
-                            INSERT INTO users (id, email, full_name, role, password_hash, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                user["id"],
-                                user["email"],
-                                user["full_name"],
-                                user["role"],
-                                generate_password_hash(user["password"]),
-                                user["created_at"],
-                            ),
-                        )
-
-            for removed_user_id in LEGACY_REMOVED_USER_IDS:
-                connection.execute("DELETE FROM users WHERE id = ?", (removed_user_id,))
 
 
 def next_id(prefix: str) -> str:
