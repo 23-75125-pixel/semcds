@@ -703,6 +703,7 @@ def create_app() -> Flask:
     def _send_resend_email(recipient_email: str, subject: str, body_lines: list[str], *, error_context: str) -> None:
         resend_api_key = os.environ.get("RESEND_API_KEY", "").strip()
         email_from = os.environ.get("EMAIL_FROM", "").strip() or os.environ.get("SMTP_FROM", "").strip()
+        resend_user_agent = os.environ.get("EMAIL_USER_AGENT", "").strip() or "SEMCDS/1.0"
 
         if not resend_api_key:
             raise RuntimeError("Resend email delivery is not configured. Set RESEND_API_KEY first.")
@@ -721,6 +722,7 @@ def create_app() -> Flask:
             headers={
                 "Authorization": f"Bearer {resend_api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": resend_user_agent,
             },
             method="POST",
         )

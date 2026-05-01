@@ -332,6 +332,7 @@ def test_forgot_password_sends_reset_link_over_resend_when_configured(tmp_path, 
     assert len(resend_requests) == 1
     assert resend_requests[0]["url"] == "https://api.resend.com/emails"
     assert resend_requests[0]["headers"]["Authorization"] == "Bearer re_test_123"
+    assert resend_requests[0]["headers"]["User-agent"] == "SEMCDS/1.0"
     assert resend_requests[0]["body"]["from"] == "verified@example.com"
     assert resend_requests[0]["body"]["to"] == [STUDENT_EMAIL]
     assert resend_requests[0]["body"]["subject"] == "SEMCDS password reset"
